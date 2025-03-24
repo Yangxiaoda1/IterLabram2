@@ -1,0 +1,20 @@
+OMP_NUM_THREADS=1 torchrun --nnodes=1 --nproc_per_node=1 run_labram_self_pretraining.py \
+        --output_dir ./checkpoints/labram_base_transformer \
+        --log_dir ./log/labram_base_transformer \
+        --model labram_huge_patch200_1600_8k_vocab \
+        --gtmodel labram_huge_patch200_1600_8k_vocab \
+        --tokenizer_model vqnsp_encoder_base_decoder_3x200x12 \
+        --tokenizer_weight ./checkpoints/vqnsp.pth \
+        --batch_size 64 \
+        --lr 5e-4 \
+        --warmup_epochs 5 \
+        --clip_grad 3.0 \
+        --drop_path 0. \
+        --layer_scale_init_value 0.1 \
+        --opt_betas 0.9 0.98 \
+        --opt_eps 1e-8  \
+        --epochs 50 \
+        --save_ckpt_freq 5 \
+        --codebook_dim 64 \
+        --gradient_accumulation_steps 1 \
+        --backbone transformer

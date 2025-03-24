@@ -38,7 +38,8 @@ from sklearn.metrics import r2_score
 from sklearn.metrics import mean_squared_error
 from scipy.stats import pearsonr
 
-
+def qprint(var,str):
+    print("\033[92m"+"{}:{}".format(str,var)+"\033[0m")
 standard_1020 = [
     'FP1', 'FPZ', 'FP2', 
     'AF9', 'AF7', 'AF5', 'AF3', 'AF1', 'AFZ', 'AF2', 'AF4', 'AF6', 'AF8', 'AF10', \
@@ -609,6 +610,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, mo
 
 def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, model_ema=None, optimizer_disc=None):
     output_dir = Path(args.output_dir)
+    # from IPython import embed;embed()
     
     if not getattr(args, 'enable_deepspeed', False):
         # torch.amp
@@ -627,12 +629,17 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
                     args.resume = os.path.join(output_dir, 'checkpoint-%d.pth' % latest_ckpt)
             print("Auto resume checkpoint: %s" % args.resume)
 
+        # from IPython import embed;embed()
         if args.resume:
+            # qprint(args.resume,'args.resume')
             if args.resume.startswith('https'):
                 checkpoint = torch.hub.load_state_dict_from_url(
                     args.resume, map_location='cpu', check_hash=True)
             else:
+                # qprint(args.resume,'args.resume')
                 checkpoint = torch.load(args.resume, map_location='cpu')
+            
+            
             model_without_ddp.load_state_dict(checkpoint['model']) # strict: bool=True, , strict=False
             print("Resume checkpoint %s" % args.resume)
             if 'optimizer' in checkpoint and 'epoch' in checkpoint:
@@ -655,6 +662,7 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
                 t = ckpt.split('-')[-1].split('.')[0]
                 if t.isdigit():
                     latest_ckpt = max(int(t), latest_ckpt)
+            
             if latest_ckpt >= 0:
                 args.resume = os.path.join(output_dir, 'checkpoint-%d' % latest_ckpt)
                 print("Auto resume checkpoint: %d" % latest_ckpt)
@@ -713,6 +721,9 @@ def build_pretraining_dataset(datasets: list, time_window: list, stride_size=200
 def get_input_chans(ch_names):
     input_chans = [0] # for cls token
     for ch_name in ch_names:
+        ch_name = ch_name.rstrip('.')#加的
+        # print("standard_1020:", standard_1020)#加的
+        # print("ch_name:", ch_name)#加的
         input_chans.append(standard_1020.index(ch_name) + 1)
     return input_chans
 

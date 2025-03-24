@@ -34,13 +34,13 @@ class DropPath(nn.Module):
     """
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
-        self.drop_prob = drop_prob
+        self.drop_prob = drop_prob# 保存丢弃路径的概率
 
     def forward(self, x):
-        return drop_path(x, self.drop_prob, self.training)
+        return drop_path(x, self.drop_prob, self.training)# 调用外部函数 `drop_path`
     
     def extra_repr(self) -> str:
-        return 'p={}'.format(self.drop_prob)
+        return 'p={}'.format(self.drop_prob)# 返回丢弃概率 drop_prob 的字符串表示
 
 
 class Mlp(nn.Module):
@@ -175,32 +175,32 @@ class Block(nn.Module):
                  drop_path=0., init_values=None, act_layer=nn.GELU, norm_layer=nn.LayerNorm,
                  window_size=None, attn_head_dim=None):
         super().__init__()
-        self.norm1 = norm_layer(dim)
+        self.norm1 = norm_layer(dim)# 层归一化，用于对输入特征进行标准化，维度为 dim
         self.attn = Attention(
             dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_norm=qk_norm, qk_scale=qk_scale,
             attn_drop=attn_drop, proj_drop=drop, window_size=window_size, attn_head_dim=attn_head_dim)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()# DropPath 用于随机深度 (Stochastic Depth) 技术
+        self.norm2 = norm_layer(dim)# 层归一化模块
+        mlp_hidden_dim = int(dim * mlp_ratio)# 多层感知机 (MLP) 的隐藏层维度，通常是输入维度的 4 倍（由 mlp_ratio 控制）
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop) # MLP 模块，用于对特征进行非线性变换
 
-        if init_values > 0:
+        if init_values > 0:# 初始化残差连接的缩放参数 (gamma)，如果 init_values > 0，则为每个维度分配一个可学习参数
             self.gamma_1 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
             self.gamma_2 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
         else:
             self.gamma_1, self.gamma_2 = None, None
 
     def forward(self, x, rel_pos_bias=None, return_attention=False, return_qkv=False):
-        if return_attention:
+        if return_attention:# 如果需要返回注意力权重
             return self.attn(self.norm1(x), rel_pos_bias=rel_pos_bias, return_attention=True)
-        if return_qkv:
+        if return_qkv:# 如果需要返回查询、键和值
             y, qkv = self.attn(self.norm1(x), rel_pos_bias=rel_pos_bias, return_qkv=return_qkv)
             x = x + self.drop_path(self.gamma_1 * y)
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
             return x, qkv
 
-        if self.gamma_1 is None:
+        if self.gamma_1 is None:# 如果没有初始化 gamma 参数
             x = x + self.drop_path(self.attn(self.norm1(x), rel_pos_bias=rel_pos_bias))
             x = x + self.drop_path(self.mlp(self.norm2(x)))
         else:
