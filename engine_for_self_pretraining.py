@@ -89,44 +89,47 @@ def train_one_epoch(model: torch.nn.Module, vqnsp: torch.nn.Module, gtmodel: tor
             # from IPython import embed; embed()
             samples = samples.float().to(device, non_blocking=True) / 100
             samples = rearrange(samples, 'B N (A T) -> B N A T', T=200)
-            bool_masked_pos = random_masking(samples.flatten(1, 2), mask_ratio=0.5).to(device, non_blocking=True)
+            # 随机mask
+            bool_masked_pos = random_masking(samples.flatten(1, 2), mask_ratio=0.2).to(device, non_blocking=True)
             # from IPython import embed; embed()
 
             with torch.no_grad():
                 with torch.cuda.amp.autocast():
                     input_ids = vqnsp.get_codebook_indices(samples, input_chans)
 
+                # 只获取被mask位置的标签
                 labels = input_ids[bool_masked_pos]
-                labels_sym = input_ids[~bool_masked_pos]
+                # 不再获取未被mask位置的标签
+                # labels_sym 只是一个占位符，保持接口兼容性
+                labels_sym = torch.zeros_like(labels)
 
             my_context = model.no_sync if args.distributed and (step + 1) % args.gradient_accumulation_steps != 0 else nullcontext
             with my_context():
                 with torch.cuda.amp.autocast(): # enabled=False
                     outputs = model(samples, input_chans, bool_masked_pos=bool_masked_pos)
                     with torch.no_grad():
-                        gtoutputs,gtoutputs_sym=gtmodel(samples, input_chans, bool_masked_pos=bool_masked_pos)
-                    pros=torch.softmax(gtoutputs,dim=1)
-                    pros_sym=torch.softmax(gtoutputs_sym,dim=1)
-                    predict=torch.argmax(pros,dim=1)
-                    predict_sym=torch.argmax(pros_sym,dim=1)
-                    # from IPython import embed; embed()
-                    # with torch.no_grad():
-                    #     if mp[ch_names][step] is None:
-                    #         mp[ch_names][step] = True
-                    #         gtoutputs=gtmodel(samples, input_chans, bool_masked_pos=bool_masked_pos)
-                    #         保存到f"{ch_names}_{step}.pt"
-                    #     else:
-
-                    # from IPython import embed; embed()
-
+                        # 只获取被mask位置的预测
+                        gtoutputs, _ = gtmodel(samples, input_chans, bool_masked_pos=bool_masked_pos)
+                    
+                    # 软标签蒸馏 - 使用温度缩放的软标签
+                    temperature = 2.0  # 温度系数，控制分布的平滑度
+                    
                     x_rec, x_rec_sym = outputs
                     if args.supervisemode=="transformer":
-                        loss_rec = loss_fn(x_rec, predict)
-                        loss_rec_sym = loss_fn(x_rec_sym, predict_sym)
+                        # 使用软标签和KL散度
+                        soft_targets = F.softmax(gtoutputs / temperature, dim=1)
+                        log_probs = F.log_softmax(x_rec / temperature, dim=1)
+                        loss_rec = F.kl_div(log_probs, soft_targets, reduction='batchmean') * (temperature ** 2)
+                        # 第二次mask的损失设为0
+                        loss_rec_sym = torch.tensor(0.0).to(device)
                     elif args.supervisemode=="vq":
+                        # 原始的硬标签方式
                         loss_rec = loss_fn(x_rec, labels)
-                        loss_rec_sym = loss_fn(x_rec_sym, labels_sym)
-                    loss = loss_rec + loss_rec_sym
+                        # 第二次mask的损失设为0
+                        loss_rec_sym = torch.tensor(0.0).to(device)
+                    
+                    # 总损失只包含第一次mask的损失
+                    loss = loss_rec
 
             loss_value = loss.item()
 
@@ -146,16 +149,26 @@ def train_one_epoch(model: torch.nn.Module, vqnsp: torch.nn.Module, gtmodel: tor
 
             torch.cuda.synchronize()
             
-            mlm_acc = (x_rec.max(-1)[1] == labels).float().mean().item()
-            mlm_acc_sym = (x_rec_sym.max(-1)[1] == labels_sym).float().mean().item()
+            # 计算准确率
+            with torch.no_grad():
+                if args.supervisemode=="transformer":
+                    # 使用教师模型的硬标签预测来计算准确率
+                    teacher_predict = gtoutputs.max(-1)[1]
+                    mlm_acc = (x_rec.max(-1)[1] == teacher_predict).float().mean().item()
+                else:
+                    # vq模式下使用原始标签计算准确率
+                    mlm_acc = (x_rec.max(-1)[1] == labels).float().mean().item()
+                
+                # 第二次mask的准确率设为0或随机值，仅保持接口兼容性
+                mlm_acc_sym = 0.0
             metric_logger.update(mlm_acc=mlm_acc)
             metric_logger.update(mlm_acc_sym=mlm_acc_sym)
-            metric_logger.update(loss_rec=loss_rec.item() / 2)
+            metric_logger.update(loss_rec=loss_rec.item())
 
             if log_writer is not None:
                 log_writer.update(mlm_acc=mlm_acc, head="loss")
                 log_writer.update(mlm_acc_sym=mlm_acc_sym, head="loss")
-                log_writer.update(loss_rec=loss_rec.item() / 2, head="loss")
+                log_writer.update(loss_rec=loss_rec.item(), head="loss")
 
             metric_logger.update(loss=loss_value)
             metric_logger.update(loss_scale=loss_scale_value)

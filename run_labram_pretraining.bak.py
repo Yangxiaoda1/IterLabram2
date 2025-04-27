@@ -22,18 +22,14 @@ from pathlib import Path
 from timm.models import create_model
 from optim_factory import create_optimizer
 
-from engine_for_self_pretraining import train_one_epoch
+from engine_for_pretraining import train_one_epoch
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
-import modeling_self_pretrain
+import modeling_pretrain
 import modeling_vqnsp
-import warnings
-warnings.filterwarnings("ignore")
 def qprint(var,str):
     print("\033[92m"+"{}:{}".format(str,var)+"\033[0m")
-
-
-if __name__ == '__main__':
+def get_args():
     parser = argparse.ArgumentParser('LaBraM pre-training script', add_help=False)
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=300, type=int)
@@ -44,12 +40,8 @@ if __name__ == '__main__':
     parser.add_argument("--tokenizer_model", type=str, default="vqnsp_encoder_base_decoder_3x200x12")
     
     # Model parameters
-    parser.add_argument('--model', default='labram_huge_patch200_1600_8k_vocab', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='mambalabram_huge_patch200_1600_8k_vocab', type=str, metavar='MODEL',
                         help='Name of model to train')
-    parser.add_argument('--gtmodel', default='gt_labram_huge_patch200_1600_8k_vocab', type=str, metavar='GTMODEL',
-                        help='Name of gtmodel to train')
-    parser.add_argument('--model_weight', default='', type=str, help='Path to student model weights')
-    parser.add_argument('--gtmodel_weight', default='', type=str, help='Path to teacher model weights')
     parser.add_argument('--rel_pos_bias', action='store_true')
     parser.add_argument('--disable_rel_pos_bias', action='store_true', dest='rel_pos_bias')
     parser.set_defaults(rel_pos_bias=False)
@@ -127,15 +119,40 @@ if __name__ == '__main__':
 
     parser.add_argument('--gradient_accumulation_steps', default=1, type=int)
 
-    parser.add_argument('--backbone',default='transformer')
+    parser.add_argument('--backbone',default='mamba')
 
-    parser.add_argument('--supervisemode',default='transformer')#可选择vq或者transformer，vq是原本的
+    return parser.parse_args()
 
 
-    args = parser.parse_args()
-    if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+def get_model(args):
+    print(f"Creating model: {args.model}")
+    model = create_model(
+        args.model,
+        pretrained=False,
+        drop_path_rate=args.drop_path,
+        drop_block_rate=None,
+        use_shared_rel_pos_bias=args.rel_pos_bias,
+        use_abs_pos_emb=args.abs_pos_emb,
+        init_values=args.layer_scale_init_value,
+        vocab_size=args.codebook_size,
+        patch_size=200
+    )
 
+    return model
+
+def get_visual_tokenizer(args):
+    print(f"Creating visual tokenizer: {args.tokenizer_model}")
+    model = create_model(
+            args.tokenizer_model,
+            pretrained=True,
+            pretrained_weight=args.tokenizer_weight,
+            as_tokenzer=True,
+            n_code=args.codebook_size, 
+            code_dim=args.codebook_dim,
+        ).eval()
+    return model
+
+def main(args):
     utils.init_distributed_mode(args)
 
     print(args)
@@ -151,30 +168,7 @@ if __name__ == '__main__':
 
     cudnn.benchmark = True
 
-    model = create_model(
-        args.model,
-        pretrained=True if args.model_weight else False,
-        init_ckpt=args.model_weight if args.model_weight else None,
-        drop_path_rate=args.drop_path,
-        drop_block_rate=None,
-        use_shared_rel_pos_bias=args.rel_pos_bias,
-        use_abs_pos_emb=args.abs_pos_emb,
-        init_values=args.layer_scale_init_value,
-        vocab_size=args.codebook_size
-    )
-
-    gtmodel = create_model(
-        args.gtmodel,
-        pretrained=True if args.gtmodel_weight else False,
-        init_ckpt=args.gtmodel_weight if args.gtmodel_weight else None,
-        drop_path_rate=args.drop_path,
-        drop_block_rate=None,
-        use_shared_rel_pos_bias=args.rel_pos_bias,
-        use_abs_pos_emb=args.abs_pos_emb,
-        init_values=args.layer_scale_init_value,
-        vocab_size=args.codebook_size
-    ).eval().to(device)
-
+    model = get_model(args)
     patch_size = model.patch_size
     print("Patch size = %s" % str(patch_size))
     args.window_size = (1, args.input_size // patch_size)
@@ -184,7 +178,9 @@ if __name__ == '__main__':
     # datasets with the same montage can be packed within a sublist
     datasets_train = [
         ["/data/home/yangxiaoda/LaBraM/data1/dataset.hdf5"], # e.g., 64 channels for dataset1 and dataset2
+        # ["/data/home/yangxiaoda/LaBraM/data1/dataset.hdf5", "/data/home/yangxiaoda/LaBraM/data1/dataset.hdf5"], # e.g., 32 channels for dataset3 and dataset4
     ]
+    # datasets_train, test_dataset, val_dataset = utils.prepare_TUAB_dataset("/data/home/yangxiaoda/LaBraM/EEGdata/TUAB/isip.piconepress.com/projects/nedc/data/tuh_eeg/tuh_eeg_abnormal/v3.0.1/edf/processed")
 
     # time window for each sublist in dataset_train
     # to ensure the total sequence length be around 256 for each dataset
@@ -194,14 +190,7 @@ if __name__ == '__main__':
     ]
     dataset_train_list, train_ch_names_list = utils.build_pretraining_dataset(datasets_train, time_window, stride_size=800, start_percentage=0, end_percentage=1)
     # prepare visual tokenizer
-    vqnsp = create_model(
-                args.tokenizer_model,
-                pretrained=True,
-                pretrained_weight=args.tokenizer_weight,
-                as_tokenzer=True,
-                n_code=args.codebook_size, 
-                code_dim=args.codebook_dim,
-            ).eval().to(device)
+    vqnsp = get_visual_tokenizer(args).to(device)
 
     if True:  # args.distributed:
         num_tasks = utils.get_world_size()
@@ -283,7 +272,7 @@ if __name__ == '__main__':
             log_writer.set_step(epoch * num_training_steps_per_epoch)
 
         train_stats = train_one_epoch(
-            model, vqnsp, gtmodel, data_loader_train_list,
+            model, vqnsp, data_loader_train_list,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, log_writer=log_writer,
             start_steps=epoch * num_training_steps_per_epoch,
@@ -292,7 +281,6 @@ if __name__ == '__main__':
             ch_names_list=train_ch_names_list,
             args=args,
         )
-
         if args.output_dir:
             utils.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
@@ -310,3 +298,10 @@ if __name__ == '__main__':
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+
+
+if __name__ == '__main__':
+    opts = get_args()
+    if opts.output_dir:
+        Path(opts.output_dir).mkdir(parents=True, exist_ok=True)
+    main(opts)
